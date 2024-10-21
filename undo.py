@@ -3,25 +3,25 @@ a write-ahead-log with undo and redo
 
 undo and redo can be implemented atop list of actions, where
 each new action adds onto the list, and undo removes it from
-the list, and updates the predecessor with the new redo option, 
+the list, and updates the predecessor with the new redo option,
 and redo does the opposite process
 
 say we have some history:
 
 > do A, do B, do C, do D, Do E
 
-when we undo E, D becomes the head of the list, 
+when we undo E, D becomes the head of the list,
 and now has a redo for E inside:
 
 > do A, do B, do C, do D (redo=do E)
 
-redoing does the opposite, taking a list item out of 
+redoing does the opposite, taking a list item out of
 the redo list, and adding it back to the history
 
 > do A, do B, do C, do D, do E
 
 this is the "linear history" representation of undo and
-redo. 
+redo.
 
 persisting the linear history as a mutable structure
 means writing the whole thing to disk each time,
@@ -139,7 +139,7 @@ class Log:
 
     def new(self):
         return Log()
-    
+
 
 class Store:
     def __init__(self):
@@ -239,6 +239,36 @@ class OpLog:
         out.reverse()
         return out
 
+    def recover(self):
+        top_idx, top = self.log.top()
+
+        if top.kind.startswith("commit-"):
+            return
+
+        prev_idx = top.prev
+        prev = self.log.get(prev_idx)
+
+        date = now()
+
+        rollback_entry = Operation(
+            kind = top.kind.replace("prepare-rollback-"),
+            description = top.description,
+            date = date,
+
+            n = prev.n,
+            prev_idx = prev.prev_idx,
+            linear_idx = prev.linear_idx,
+
+            redos = prev.redos,
+            state = prev.state,
+            prepare = top_idx,
+        )
+
+        changes = top.changes
+        self.store.rollback(changes)
+        self.log.commit(rollback_entry)
+
+
     def compact(self):
         top_idx, top = self.log.top()
         new_log = self.log.new()
@@ -290,7 +320,7 @@ class OpLog:
                 n = top.n,
                 linear_idx = linear_idx,
                 prev_idx = prev_idx,
-                
+
                 state = top.state,
                 redos = (),
                 prepare = prepare_idx,
@@ -382,7 +412,7 @@ class OpLog:
         elif n < -len(top_redos)  or n >= len(top_redos):
             raise Bad(f"redo: {n} is not in range 0, {len(top_redos)}")
 
-        redo_linear_idx, redo_idx = top_redos[n] 
+        redo_linear_idx, redo_idx = top_redos[n]
 
         redo_of = self.log.get(redo_linear_idx)
         changes = self.log.get(redo_of.prepare).changes
@@ -397,6 +427,7 @@ class OpLog:
             date = date,
 
             n = top.n + 1,
+            linear_idx = redo_linear_idx,
             prev_idx = top_idx,
 
             state = redo_entry.state,
@@ -456,6 +487,7 @@ class OpLog:
 
         description = to_undo.description
         changes = self.log.get(to_undo.prepare).changes
+        undo_changes = {key: (new, old) for key, (old, new) in changes.items()}
 
         # the old top's prev_idx is the new head of the operation stack
 
@@ -481,12 +513,13 @@ class OpLog:
             kind="prepare-undo",
             description = description,
             date = date,
-            
+
             n = old_prev.n,
+            linear_idx = old_prev.linear_idx,
             prev_idx = old_prev.prev_idx,
 
             state = old_prev.state,
-            changes = changes,
+            changes = undo_changes,
         )
 
         prepare_idx = self.log.next_idx()
@@ -521,10 +554,9 @@ class OpLog:
         )
 
         try:
-            # we're undoing, so try try rolling back first
-            self.store.rollback(changes)
+            self.store.apply(undo_changes)
         except:
-            self.store.apply(changes)
+            self.store.rollback(undo_changes)
             self.log.append(rollback_entry)
             raise
         else:
@@ -568,10 +600,10 @@ def more_example_code():
     for _ in (1,2):
         for x in range(1, 6):
             for _ in range(x):
-                l.undo() 
+                l.undo()
 
             for _ in range(x):
-                l.redo() 
+                l.redo()
 
     for _ in range(5):
         l.undo()
@@ -600,10 +632,10 @@ def still_more_example_code():
         l.undo()
 
     for _ in range(4):
-        l.redo(0) 
+        l.redo(0)
         l.redo()
-        l.undo() 
-        l.undo() 
+        l.undo()
+        l.undo()
 
 
     l.undo()
