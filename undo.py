@@ -177,7 +177,7 @@ class FakeStore:
 
 
 class Operation:
-    def __init__(self, n, kind, description, prev_idx=None, linear_idx=None, redos=(), state=None, changes=None, prepare=None, date=None):
+    def __init__(self, n, kind, description, prev_idx=None, linear_idx=None, redos=(), state=None, changes=None, prepare_idx=None, date=None):
         self.kind = kind                # commit or prepare, for do, undo or redo
         self.description = description  # the description
         self.date = date                # date of operation
@@ -190,7 +190,7 @@ class Operation:
         self.redos = redos              # a (linear_idx, last_redo_idx) list of operations to redo
 
         self.changes = changes          # in a prepare operation, this contains the changes to the store
-        self.prepare = prepare          # in a commit operation, this points to the prepare
+        self.prepare_idx = prepare_idx  # in a commit operation, this points to the prepare
 
     def __str__(self):
         return f"{self.n} {self.kind: <14} {self.description: <5}\tlinear_idx={self.linear_idx}\t prev_idx={self.prev_idx}\tredos={self.redos}, state={self.state}, changes={self.changes}"
@@ -275,7 +275,7 @@ class OpLog:
 
             redos = prev.redos,
             state = prev.state,
-            prepare = top_idx,
+            prepare_idx = top_idx,
         )
 
         changes = top.changes
@@ -304,7 +304,7 @@ class OpLog:
         for top in entries:
             linear_top = self.log.get(top.linear_idx)
 
-            prepare = self.log.get(linear_top.prepare)
+            prepare = self.log.get(linear_top.prepare_idx)
 
             prepare_entry = Operation(
                 kind = "prepare-do",
@@ -336,7 +336,7 @@ class OpLog:
 
                 state = top.state,
                 redos = (),
-                prepare = prepare_idx,
+                prepare_idx = prepare_idx,
             )
             new_log.append(commit_entry)
 
@@ -388,7 +388,7 @@ class OpLog:
             linear_idx = linear_idx,
 
             state = state,
-            prepare = prepare_idx,
+            prepare_idx = prepare_idx,
         )
 
         rollback_entry = Operation(
@@ -402,7 +402,7 @@ class OpLog:
 
             redos = top.redos,
             state = top.state,
-            prepare = prepare_idx,
+            prepare_idx = prepare_idx,
         )
 
         try:
@@ -441,7 +441,7 @@ class OpLog:
         redo_linear_idx, redo_idx = top_redos[n]
 
         redo_of = self.log.get(redo_linear_idx)
-        changes = self.log.get(redo_of.prepare).changes
+        changes = self.log.get(redo_of.prepare_idx).changes
 
         redo_entry = self.log.get(redo_idx)
 
@@ -474,7 +474,7 @@ class OpLog:
 
             redos = redo_entry.redos,
             state = redo_entry.state,
-            prepare = prepare_idx,
+            prepare_idx = prepare_idx,
         )
 
         rollback_entry = Operation(
@@ -488,7 +488,7 @@ class OpLog:
 
             redos = top.redos,
             state = top.state,
-            prepare = prepare_idx,
+            prepare_idx = prepare_idx,
         )
 
         try:
@@ -512,7 +512,7 @@ class OpLog:
         to_undo = self.log.get(top.linear_idx)
 
         description = to_undo.description
-        changes = self.log.get(to_undo.prepare).changes
+        changes = self.log.get(to_undo.prepare_idx).changes
         undo_changes = {key: (new, old) for key, (old, new) in changes.items()}
 
         # the old top's prev_idx is the new head of the operation stack
@@ -562,7 +562,7 @@ class OpLog:
 
             redos = new_redos,
             state = old_prev.state,
-            prepare = prepare_idx,
+            prepare_idx = prepare_idx,
         )
 
         rollback_entry = Operation(
@@ -576,7 +576,7 @@ class OpLog:
 
             redos = top.redos,
             state = top.state,
-            prepare = prepare_idx,
+            prepare_idx = prepare_idx,
         )
 
         try:
