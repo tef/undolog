@@ -280,7 +280,7 @@ class OpLog:
 
         changes = top.changes
         self.store.rollback(changes)
-        self.log.commit(rollback_entry)
+        self.log.append(rollback_entry)
 
 
     def compact(self, new_log):
@@ -665,7 +665,7 @@ class Log:
     def append(self, op):
         self.fh.seek(0, 2)
 
-        body = json.dumps(vars(op)).encode('utf-8')
+        body = json.dumps(vars(op), indent=8).encode('utf-8')
         length = len(body) + 1
 
         self.fh.write(f"+++{length:016x}\n".encode('utf-8'))
@@ -688,7 +688,7 @@ class Store:
 
     def write(self):
         self.fh.seek(0)
-        self.fh.write(json.dumps(self.d).encode('utf-8'))
+        self.fh.write(json.dumps(self.d, indent=8).encode('utf-8'))
         self.fh.truncate()
 
     def set(self, k, v):
