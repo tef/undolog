@@ -16,7 +16,7 @@ reconstruct the linear history
 6. redo B (do 2, prev: 5)
 
 we then split each operation into a `prepare` and
-`commit`, that allows us to rollback incomplete 
+`commit`, that allows us to rollback incomplete
 or interrupted operations
 
 """
@@ -284,6 +284,21 @@ class OpLog:
             new_log.append(commit_entry)
 
             prev_idx = linear_idx
+
+        linear_idx = self.log.next_idx()
+        compact = Operation(
+            kind="commit-close",
+            description="",
+            date=now(),
+
+            n = top.n + 1,
+            linear_idx = linear_idx,
+            prev_idx = top.prev_idx,
+
+            state=top.state,
+            redos=(),
+        )
+        self.log.append(compact)
 
         self.log = new_log
 
@@ -574,18 +589,18 @@ class Log:
         return self._read()
 
     def _read(self):
-        header = self.fh.read(20)
-        if header[0:3] != b"+++" or header[-1:] != b'\n':
-            raise Bad("corrupt file: header", header, header[0:3], header[-1])
+        header = self.fh.read(81)
+        if header[0:9] != b"json+len=" or header[-1:] != b'\n':
+            raise Bad("corrupt file: header", header)
 
-        length = int(header[3:-1], 16)
-        body = self.fh.read(length-1)
+        length = int(header[10:26], 16)
+        body = self.fh.read(length)
 
-        footer = self.fh.read(21)
-        if footer[0:4] != b"\n---" or footer[-1:] != b'\n':
-            raise Bad("corrupt file: footer")
+        footer = self.fh.read(82)
+        if footer[0:10] != b"\njson-len=" or footer[-1:] != b'\n':
+            raise Bad("corrupt file: footer", footer)
 
-        footer_length = int(footer[4:-1], 16)
+        footer_length = int(footer[11:27], 16)
 
         if length != footer_length:
             raise Bad("corrupt file")
@@ -593,15 +608,15 @@ class Log:
         return Operation(**json.loads(body))
 
     def top(self):
-        self.fh.seek(-21, 2)
+        self.fh.seek(-82, 2)
 
-        footer = self.fh.read(21)
-        if footer[0:4] != b"\n---" or footer[-1:] != b'\n':
-            raise Bad("corrupt file")
+        footer = self.fh.read(82)
+        if footer[0:10] != b"\njson-len=" or footer[-1:] != b'\n':
+            raise Bad("corrupt file: footer")
 
-        length = int(footer[4:-1], 16)
+        footer_length = int(footer[11:27], 16)
 
-        idx = self.fh.tell() - 20 - 20 - length
+        idx = self.fh.tell() -81 - 81 - footer_length -1
 
         return idx, self.get(idx)
 
@@ -609,11 +624,13 @@ class Log:
         self.fh.seek(0, 2)
 
         body = json.dumps(vars(op), indent=8).encode('utf-8')
-        length = len(body) + 1
+        length = len(body)
 
-        self.fh.write(f"+++{length:016x}\n".encode('utf-8'))
+        pad = " "*(80-9-16)
+
+        self.fh.write(f"json+len={length:016x}{pad}\n".encode('utf-8'))
         self.fh.write(body)
-        self.fh.write(f"\n---{length:016x}\n".encode('utf-8'))
+        self.fh.write(f"\njson-len={length:016x}{pad}\n".encode('utf-8'))
 
         self._next_idx = self.fh.tell()
 
@@ -788,8 +805,6 @@ if __name__ == '__main__':
     elif arg == "compact":
         with open("log", "ab+") as log_fh, open("new_log", "xb+") as new_log_fh:
             log = Log(log_fh)
-            OpLog(log, None).init({"file":"store"})
-
             top_idx, top = log.top()
             store_file = top.state["file"]
 
@@ -804,8 +819,6 @@ if __name__ == '__main__':
                 oplog.compact(new_log)
 
         os.replace("new_log", "log")
-
-        pass
 
     with open("log", "ab+") as log_fh:
         log = Log(log_fh)
@@ -824,33 +837,37 @@ if __name__ == '__main__':
                     value = store.get(name)
                     if value is not None:
                         print(f"{name}:{store.get(name)}")
-            elif arg == "set":
-                with oplog.do(" ".join(sys.argv[1:])) as txn:
-                    for arg in sys.argv[2:]:
-                        key, value = arg.split('=')
-                        if value == "":
-                              value = None
-                        print(f"{key}: {value}")
-                        txn.set_store(key, value)
-            elif arg == "undo":
-                oplog.undo()
-                print("undo")
-            elif arg == "redo":
-                n = -1
-                if len(sys.argv[2:]) >= 1:
-                    n = int(sys.argv[2])
-                oplog.redo(n)
-                print("redo")
-            elif arg == "redos":
-                for i, r in enumerate(oplog.redos()):
-                    print(i, r)
             elif arg == "changes":
                 for line in oplog.linear_history():
                     print(line)
             elif arg == "history":
                 for line in oplog.history():
                     print(line)
+            elif arg == "redos":
+                for i, r in enumerate(oplog.redos()):
+                    print(i, r)
 
+            else:
+                if top.kind == "commit-close":
+                    print("error: log cannot be edited")
+
+                elif arg == "set":
+                    with oplog.do(" ".join(sys.argv[1:])) as txn:
+                        for arg in sys.argv[2:]:
+                            key, value = arg.split('=')
+                            if value == "":
+                                  value = None
+                            print(f"{key}: {value}")
+                            txn.set_store(key, value)
+                elif arg == "undo":
+                    oplog.undo()
+                    print("undo")
+                elif arg == "redo":
+                    n = -1
+                    if len(sys.argv[2:]) >= 1:
+                        n = int(sys.argv[2])
+                    oplog.redo(n)
+                    print("redo")
     print()
     sys.exit(-1)
 
