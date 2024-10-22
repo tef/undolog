@@ -99,6 +99,8 @@ def example_code():
         txn.set_state("internal", True) ## stored inside the log
 
     l.undo()
+    for r in l.redos():
+        print("redo", r)
     l.redo()
 
     l.print()
@@ -215,7 +217,7 @@ class OpLog:
     def __init__(self, log, store, state):
         self.log = log
         self.store = store
-        self.linear = [] # used for correctness checking
+        # self.linear = [] # used for correctness checking
 
         if self.log.next_idx() == 0:
             init = Operation(n=0, kind="commit-init", description="", linear_idx=0, state=state, date=now())
@@ -225,7 +227,7 @@ class OpLog:
         top_idx, top = self.top()
         return top.state
 
-    def full_history(self):
+    def history(self):
         return [f"{x.n} {x.kind}: {x.description}, {x.state}" for x in self.log.entries()]
 
     def linear_history(self):
@@ -237,7 +239,7 @@ class OpLog:
         while top.linear_idx > 0:
             linear_idx = self.log.get(top.linear_idx)
 
-            action = f"{top.n} {linear_idx.kind}: {linear_idx.description}, {top.state}"
+            action = f"{top.date} {linear_idx.description}"
             out.append(action)
 
             top = self.log.get(top.prev_idx)
@@ -405,7 +407,20 @@ class OpLog:
             raise
         else:
             self.log.append(commit_entry)
-            self.linear.append(commit_entry.linear_idx)
+            # self.linear.append(commit_entry.linear_idx)
+
+
+    def redos(self): 
+        top_idx, top = self.log.top()
+
+        out = []
+
+        for (redo_idx, last_redo_idx) in top.redos:
+            redo = self.log.get(redo_idx)
+            last_redo = self.log.get(last_redo_idx)
+            out.append(f"{last_redo.date} {redo.description}")
+
+        return out
 
 
     def redo(self, n=-1):
@@ -478,7 +493,7 @@ class OpLog:
             raise
         else:
             self.log.append(commit_entry)
-            self.linear.append(commit_entry.linear_idx)
+            # self.linear.append(commit_entry.linear_idx)
 
 
     def undo(self):
@@ -567,12 +582,12 @@ class OpLog:
         else:
             self.log.append(commit_entry)
 
-            o = self.linear.pop(-1)
-            if o != to_undo.linear_idx:
-                raise Bad(f"undo: internal corruption, popped {o} wanted {to_undo.linear_idx}")
+            # o = self.linear.pop(-1)
+            # if o != to_undo.linear_idx:
+            #    raise Bad(f"undo: internal corruption, popped {o} wanted {to_undo.linear_idx}")
 
     def print(self):
-        print("linear: ", *self.linear)
+        # print("linear: ", *self.linear)
         print("store", self.store.d)
         for i, x in enumerate(self.linear_history()):
             print(i, x, sep="\t")
@@ -702,12 +717,33 @@ def still_more_example_code():
 if __name__ == '__main__':
     import sys
 
+    commands = {
+        "example": "        # run example code in memory",
+        "create": "         # create a log and store file ",
+        "set": "key=value   # set key to value in store", 
+        "get": "key         # get key from store",
+        "undo": "           # undo last action", 
+        "redo": "<n>        # redo last undo action", 
+        "redos": "          # list all redoable actions from current action",
+        "changes": "        # list all changes to the store", 
+        "history": "        # list all operations, including undo/redo", 
+        "compact": "        # remove all undo/redo operations from history",
+        "help": "           # this text",
+    }
+
     if len(sys.argv) >= 2:
         arg = sys.argv[1]
     else:
+        arg == "help"
+    if arg not in commands:
         arg = "help"
 
-    if arg == "example":
+    if arg == "help":
+        for k, v in commands.items():
+            print(sys.argv[0], k, v)
+        print()
+        sys.exit(-1)
+    elif arg == "example":
         print("---")
         example_code()
         print("---")
@@ -715,8 +751,10 @@ if __name__ == '__main__':
         print("---")
         still_more_example_code()
         print()
-    else:
-        print(sys.argv[0], "example")
-        print()
         sys.exit(-1)
+
+    sys.exit(-1)
+
+
+
 
