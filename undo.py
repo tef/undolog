@@ -78,7 +78,8 @@ from disc, just the commit data headers
 """
 
 def example_code():
-    l = OpLog(FakeLog("test"), FakeStore("test"), {"internal": False})
+    l = OpLog(FakeLog("test"), FakeStore("test"))
+    l.init({"internal": False})
 
     with l.do("A") as txn:
         txn.set_store("foo", "A")
@@ -104,7 +105,7 @@ def example_code():
     l.redo()
 
     l.print()
-    
+
     new_log = FakeLog("new")
     l.compact(new_log)
     l.print()
@@ -214,11 +215,13 @@ class Transaction:
 
 
 class OpLog:
-    def __init__(self, log, store, state):
+    def __init__(self, log, store):
         self.log = log
         self.store = store
         # self.linear = [] # used for correctness checking
 
+
+    def init(self, state):
         if self.log.next_idx() == 0:
             init = Operation(n=0, kind="commit-init", description="", linear_idx=0, state=state, date=now())
             self.log.append(init)
@@ -410,7 +413,7 @@ class OpLog:
             # self.linear.append(commit_entry.linear_idx)
 
 
-    def redos(self): 
+    def redos(self):
         top_idx, top = self.log.top()
 
         out = []
@@ -597,7 +600,7 @@ class OpLog:
         print()
 
 
-class Logfile:
+class Log:
     def __init__(self, name):
         self.i = []
         self.name = name
@@ -618,8 +621,9 @@ class Logfile:
         return len(self.i)
 
 
-class Storefile:
-    def __init__(self):
+class Store:
+    def __init__(self, fh):
+        self.fh = fh
         self.d = {}
 
     def set(self, k, v):
@@ -646,7 +650,8 @@ class Storefile:
 
 
 def more_example_code():
-    l = OpLog(FakeLog("test"), FakeStore("test"), {})
+    l = OpLog(FakeLog("test"), FakeStore("test"))
+    l.init({})
 
     with l.do("A") as txn:
         txn.set_state("foo", "A")
@@ -685,7 +690,8 @@ def more_example_code():
     l.print()
 
 def still_more_example_code():
-    l = OpLog(FakeLog("test"), FakeStore("test"), {"internal": 0})
+    l = OpLog(FakeLog("test"), FakeStore("test"))
+    l.init({"internal": 0})
 
     with l.do("0") as txn:
         txn.set_state("internal", "run")
@@ -714,27 +720,37 @@ def still_more_example_code():
     l.compact(FakeLog("test"))
     l.print()
 
+def run_all_examples():
+        print("---")
+        example_code()
+        print("---")
+        more_example_code()
+        print("---")
+        still_more_example_code()
+        print()
+
+
 if __name__ == '__main__':
     import sys
 
     commands = {
         "example": "        # run example code in memory",
         "create": "         # create a log and store file ",
-        "set": "key=value   # set key to value in store", 
+        "set": "key=value   # set key to value in store",
         "get": "key         # get key from store",
-        "undo": "           # undo last action", 
-        "redo": "<n>        # redo last undo action", 
+        "undo": "           # undo last action",
+        "redo": "<n>        # redo last undo action",
         "redos": "          # list all redoable actions from current action",
-        "changes": "        # list all changes to the store", 
-        "history": "        # list all operations, including undo/redo", 
-        "compact": "        # remove all undo/redo operations from history",
+        "changes": "        # list all changes to the store",
+        "history": "        # list all operations, including undo/redo",
+        "compact": "        # remove all undo/redo operations from history, cannot be undone",
         "help": "           # this text",
     }
 
     if len(sys.argv) >= 2:
         arg = sys.argv[1]
     else:
-        arg == "help"
+        arg = "help"
     if arg not in commands:
         arg = "help"
 
@@ -744,14 +760,48 @@ if __name__ == '__main__':
         print()
         sys.exit(-1)
     elif arg == "example":
-        print("---")
-        example_code()
-        print("---")
-        more_example_code()
-        print("---")
-        still_more_example_code()
-        print()
+        run_all_examples()
         sys.exit(-1)
+    elif arg == "create":
+        # if exists, exit
+
+        with open("log", "xb") as log_fh, open("store", "xb") as store_fh:
+            log = Log(log_fh)
+            store = Store(store_fh)
+
+            oplog = OpLog(log, store)
+            oplog.init({"file":"store"})
+
+        sys.exit(0)
+
+    with open("log", "ab") as log_fh:
+        log = Log(log_fh)
+        OpLog(log, None).init({"file":"store"})
+
+        top_idx, top = log.top()
+        store_file = top.state["file"]
+
+        with open(store_file) as store_fh:
+            store = Store(store_fh)
+            oplog = OpLog(log, store)
+            oplog.recover()
+
+            if arg == "get":
+                pass
+            elif arg == "set":
+                pass
+            elif arg == "undo":
+                pass
+            elif arg == "redo":
+                pass
+            elif arg == "redos":
+                pass
+            elif arg == "changes":
+                pass
+            elif arg == "history":
+                pass
+            elif arg == "compact":
+                pass
 
     sys.exit(-1)
 
