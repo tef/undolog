@@ -78,23 +78,25 @@ from disc, just the commit data headers
 """
 
 def example_code():
-    l = OpLog(Log(), Store(), {})
+    l = OpLog(FakeLog("test"), FakeStore("test"), {"internal": False})
 
     with l.do("A") as txn:
-        txn.set("foo", "A")
+        txn.set_store("foo", "A")
 
     with l.do("B") as txn:
-        txn.set("bar", "B")
+        txn.set_store("bar", "B")
 
     with l.do("C") as txn:
-        txn.set("foo", "C")
+        txn.set_store("foo", "C")
 
     with l.do("D") as txn:
-        txn.set("bar", "D")
+        txn.set_store("bar", "D")
 
     with l.do("E") as txn:
-        txn.set("foo", "E")
-        txn.set("bar", "E")
+        txn.set_store("foo", "E") # changes applied to FakeStore
+        txn.set_store("bar", "E")
+
+        txn.set_state("internal", True) ## stored inside the log
 
     l.undo()
     l.redo()
@@ -118,8 +120,10 @@ class Bad(Exception):
 class CancelTransaction(Exception):
     pass
 
-class Log:
-    def __init__(self):
+class FakeLog:
+    """ an in memory version of a log file"""
+    def __init__(self, name):
+        self.name = name
         self.i = []
 
     def entries(self):
@@ -137,13 +141,14 @@ class Log:
     def next_idx(self):
         return len(self.i)
 
-    def new(self):
-        return Log()
+    def new(self, name):
+        return FakeLog(name)
 
 
-class Store:
-    def __init__(self):
+class FakeStore:
+    def __init__(self, name):
         self.d = {}
+        self.name = name
 
     def set(self, k, v):
         self.d[k] = v
@@ -168,23 +173,6 @@ class Store:
                 raise Bad("oh no")
 
 
-class Transaction:
-    def __init__(self, description, state, store):
-        self.description = description
-        self.state = state
-        self.store = store
-        self.changes = {}
-
-    def set(self, key, value):
-        if key in self.changes:
-            old, new = self.changes[key]
-        else:
-            old = self.store.get(key)
-        self.changes[key] = (old, value)
-
-    def cancel(self):
-        raise CancelTransaction
-
 class Operation:
     def __init__(self, n, kind, description, prev_idx=None, linear_idx=None, redos=(), state=None, changes=None, prepare=None, date=None):
         self.kind = kind                # commit or prepare, for do, undo or redo
@@ -203,6 +191,27 @@ class Operation:
 
     def __str__(self):
         return f"{self.n} {self.kind: <14} {self.description: <5}\tlinear_idx={self.linear_idx}\t prev_idx={self.prev_idx}\tredos={self.redos}, state={self.state}, changes={self.changes}"
+
+class Transaction:
+    def __init__(self, description, state, store):
+        self.description = description
+        self.old_state = state
+        self.new_state = dict(state)
+        self.store = store
+        self.changes = {}
+
+    def set_store(self, key, value):
+        if key in self.changes:
+            old, new = self.changes[key]
+        else:
+            old = self.store.get(key)
+        self.changes[key] = (old, value)
+
+    def set_state(self, key, value):
+        self.new_state[key] = value
+
+    def cancel(self):
+        raise CancelTransaction
 
 
 class OpLog:
@@ -271,7 +280,7 @@ class OpLog:
 
     def compact(self):
         top_idx, top = self.log.top()
-        new_log = self.log.new()
+        new_log = self.log.new(self.log.name)
 
         init = self.log.get(0)
         new_log.append(init)
@@ -342,7 +351,7 @@ class OpLog:
             return
 
         changes = txn.changes
-        state = txn.state
+        state = txn.new_state
 
         ## prepare Op
 
@@ -577,25 +586,75 @@ class OpLog:
         print()
 
 
+class Logfile:
+    def __init__(self, name):
+        self.i = []
+        self.name = name
+
+    def entries(self):
+        return self.i
+
+    def get(self, idx):
+        return self.i[idx]
+
+    def top(self):
+        return len(self.i)-1, self.i[-1]
+
+    def append(self, op):
+        self.i.append(op)
+
+    def next_idx(self):
+        return len(self.i)
+
+    def new(self, name):
+        return FileLog(name)
+
+
+class Storefile:
+    def __init__(self):
+        self.d = {}
+
+    def set(self, k, v):
+        self.d[k] = v
+
+    def get(self, k):
+        return self.d.get(k)
+
+    def apply(self, changes):
+        for k in changes:
+            old, new = changes[k]
+            if self.d.get(k) != old:
+                raise Bad("oh no")
+            self.d[k] = new
+
+    def rollback(self, changes):
+        for k in changes:
+            old, new = changes[k]
+            current = self.d.get(k)
+            if current == new:
+                self.d[k] = old
+            elif current != old:
+                raise Bad("oh no")
+
 
 def more_example_code():
-    l = OpLog(Log(), Store(), {})
+    l = OpLog(FakeLog("test"), FakeStore("test"), {})
 
     with l.do("A") as txn:
-        txn.set("foo", "A")
+        txn.set_state("foo", "A")
 
     with l.do("B") as txn:
-        txn.set("bar", "B")
+        txn.set_state("bar", "B")
 
     with l.do("C") as txn:
-        txn.set("foo", "C")
+        txn.set_state("foo", "C")
 
     with l.do("D") as txn:
-        txn.set("bar", "D")
+        txn.set_state("bar", "D")
 
     with l.do("E") as txn:
-        txn.set("foo", "E")
-        txn.set("bar", "E")
+        txn.set_state("foo", "E")
+        txn.set_state("bar", "E")
 
     for _ in (1,2):
         for x in range(1, 6):
@@ -610,7 +669,7 @@ def more_example_code():
         l.redo()
 
     with l.do("f6") as txn:
-        txn.set("f6", True)
+        txn.set_state("f6", True)
     l.undo()
 
     l.print()
@@ -618,16 +677,16 @@ def more_example_code():
     l.print()
 
 def still_more_example_code():
-    l = OpLog(Log(), Store(), -1)
+    l = OpLog(FakeLog("test"), FakeStore("test"), {"internal": 0})
 
     with l.do("0") as txn:
-        txn.state = 0
+        txn.set_state("internal", "run")
 
     for x in range(4):
         with l.do("*"+str(x)) as txn:
-            txn.state = x
+            txn.set_state( "internal", "foo")
         with l.do("+"+str(x)):
-            txn.state = x*2
+            txn.set_state("internal", "bar")
         l.undo()
         l.undo()
 
@@ -648,10 +707,23 @@ def still_more_example_code():
     l.print()
 
 if __name__ == '__main__':
-    print("---")
-    example_code()
-    print("---")
-    more_example_code()
-    print("---")
-    still_more_example_code()
-    print()
+    import sys
+
+    if len(sys.argv) >= 2:
+        arg = sys.argv[1]
+    else:
+        arg = "help"
+
+    if arg == "example":
+        print("---")
+        example_code()
+        print("---")
+        more_example_code()
+        print("---")
+        still_more_example_code()
+        print()
+    else:
+        print(sys.argv[0], "example")
+        print()
+        sys.exit(-1)
+
