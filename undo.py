@@ -102,8 +102,9 @@ def example_code():
     l.redo()
 
     l.print()
-
-    l.compact()
+    
+    new_log = FakeLog("new")
+    l.compact(new_log)
     l.print()
 
 # ----
@@ -140,10 +141,6 @@ class FakeLog:
 
     def next_idx(self):
         return len(self.i)
-
-    def new(self, name):
-        return FakeLog(name)
-
 
 class FakeStore:
     def __init__(self, name):
@@ -278,9 +275,8 @@ class OpLog:
         self.log.commit(rollback_entry)
 
 
-    def compact(self):
+    def compact(self, new_log):
         top_idx, top = self.log.top()
-        new_log = self.log.new(self.log.name)
 
         init = self.log.get(0)
         new_log.append(init)
@@ -606,9 +602,6 @@ class Logfile:
     def next_idx(self):
         return len(self.i)
 
-    def new(self, name):
-        return FileLog(name)
-
 
 class Storefile:
     def __init__(self):
@@ -673,7 +666,7 @@ def more_example_code():
     l.undo()
 
     l.print()
-    l.compact()
+    l.compact(FakeLog("test"))
     l.print()
 
 def still_more_example_code():
@@ -703,7 +696,7 @@ def still_more_example_code():
     l.redo()
 
     l.print()
-    l.compact()
+    l.compact(FakeLog("test"))
     l.print()
 
 if __name__ == '__main__':
