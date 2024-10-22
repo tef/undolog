@@ -1,81 +1,24 @@
 #!/usr/bin/env python3
 """
-a write-ahead-log with undo and redo
+an undo/redo log over an append only log
 
-undo and redo can be implemented atop list of actions, where
-each new action adds onto the list, and undo removes it from
-the list, and updates the predecessor with the new redo option,
-and redo does the opposite process
+> do A, do B, undo B, redo B, undo B, redo B
 
-say we have some history:
+we store a list of operations, and annotate them to
+reconstruct the linear history
 
-> do A, do B, do C, do D, Do E
-
-when we undo E, D becomes the head of the list,
-and now has a redo for E inside:
-
-> do A, do B, do C, do D (redo=do E)
-
-redoing does the opposite, taking a list item out of
-the redo list, and adding it back to the history
-
-> do A, do B, do C, do D, do E
-
-this is the "linear history" representation of undo and
-redo.
-
-persisting the linear history as a mutable structure
-means writing the whole thing to disk each time,
-or using something like sqlite to handle updates
-in a more piecemeal style.
-
-ideally, we'd like to store the undo/redo history
-atop of something like a log, where we can cheaply
-append new operations, and quickly read in the last
-entry.
-
-instead, we'll use something else, and then
-adapt it to get back something that looks
-and feels like the linear history: an operation log
-
-> do A, do B, do C, do D, do E, undo E, redo E
-
-unlike the "linear history", the log doesn't require
-any mutation, or update in place to function. this
-means we can write these operations to disk with
-ease.
-
-we'd still like to see and use the linear history,
-so we annotate each operation in the log with enough
-information to reconstruct it.
-
-we need a "this is the original do" pointer, and also
-"this is the predecessor" pointer, and thats it
-
+0. init
 1. do A (do 1, prev 0)
-2. do B (do 2, prev 1)
-3. do C (do 3, prev 2)
-4. do D (do 4, prev 3)
-5  do E (do 5, prev 4)
-6. undo E (do 4, prev 3) -- we're pretending to be `do D` at the top of the list
-7. redo E (do 5, prev 6) -- we're pretending to be `do E` at the top, and we point to the undo behind us
+2. do B (do 2, prev: 1)
+3. undo B (do 1, prev: 0)
+4. redo B (do 2, prev: 3)
+5. undo B (do 1, prev: 0)
+6. redo B (do 2, prev: 5)
 
-to turn this from an operations log into a write ahead
-log, we split each do/redo/undo into two entries, a prepare
-and a commit (or rollback).
+we then split each operation into a `prepare` and
+`commit`, that allows us to rollback incomplete 
+or interrupted operations
 
-1. prepare-do A
-2. commit-do A
-3. prepare-undo A
-4. rollback-undo A
-
-this split has an additional benefit: we can put
-the operation details inside the prepare entry,
-and omit them from the commit entry entirely.
-
-this means that scanning through the history
-doesn't require loading all the operations
-from disc, just the commit data headers
 """
 
 def example_code():
@@ -866,7 +809,6 @@ if __name__ == '__main__':
 
     with open("log", "ab+") as log_fh:
         log = Log(log_fh)
-        OpLog(log, None).init({"file":"store"})
 
         top_idx, top = log.top()
         store_file = top.state["file"]
