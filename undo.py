@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 a write-ahead-log with undo and redo
 
@@ -112,11 +113,13 @@ def example_code():
 
 # ----
 
+import json
+
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
 def now():
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).timestamp()
 
 class Bad(Exception):
     pass
@@ -146,9 +149,9 @@ class FakeLog:
         return len(self.i)
 
 class FakeStore:
-    def __init__(self, name):
+    def __init__(self, fh):
+        self.fh = fh
         self.d = {}
-        self.name = name
 
     def set(self, k, v):
         self.d[k] = v
@@ -253,16 +256,16 @@ class OpLog:
     def recover(self):
         top_idx, top = self.log.top()
 
-        if top.kind.startswith("commit-"):
+        if not top.kind.startswith("prepare-"):
             return
 
-        prev_idx = top.prev
+        prev_idx = top.prev_idx
         prev = self.log.get(prev_idx)
 
         date = now()
 
         rollback_entry = Operation(
-            kind = top.kind.replace("prepare-rollback-"),
+            kind = top.kind.replace("prepare-", "rollback-"),
             description = top.description,
             date = date,
 
@@ -601,30 +604,92 @@ class OpLog:
 
 
 class Log:
-    def __init__(self, name):
-        self.i = []
-        self.name = name
-
-    def entries(self):
-        return self.i
-
-    def get(self, idx):
-        return self.i[idx]
-
-    def top(self):
-        return len(self.i)-1, self.i[-1]
-
-    def append(self, op):
-        self.i.append(op)
+    def __init__(self, fh):
+        self.fh = fh
+        fh.seek(0, 2) # seek to end
+        self._next_idx = fh.tell()
+        self._top = None
 
     def next_idx(self):
-        return len(self.i)
+        return self._next_idx
+
+    def entries(self):
+        if self._next_idx == 0:
+            return []
+
+        # seek to beginning, decode all files
+        out = []
+        idx = 0
+        self.fh.seek(0)
+        while idx < self._next_idx:
+            out.append(self._read())
+            idx = self.fh.tell()
+        return out
+
+    def get(self, idx):
+        self.fh.seek(idx)
+        return self._read()
+
+    def _read(self):
+        header = self.fh.read(20)
+        if header[0:3] != b"+++" or header[-1:] != b'\n':
+            raise Bad("corrupt file: header", header, header[0:3], header[-1])
+
+        length = int(header[3:-1], 16)
+        body = self.fh.read(length-1)
+
+        footer = self.fh.read(21)
+        if footer[0:4] != b"\n---" or footer[-1:] != b'\n':
+            raise Bad("corrupt file: footer")
+
+        footer_length = int(footer[4:-1], 16)
+
+        if length != footer_length:
+            raise Bad("corrupt file")
+
+        return Operation(**json.loads(body))
+
+    def top(self):
+        self.fh.seek(-21, 2)
+
+        footer = self.fh.read(21)
+        if footer[0:4] != b"\n---" or footer[-1:] != b'\n':
+            raise Bad("corrupt file")
+
+        length = int(footer[4:-1], 16)
+
+        idx = self.fh.tell() - 20 - 20 - length
+
+        return idx, self.get(idx)
+
+    def append(self, op):
+        self.fh.seek(0, 2)
+
+        body = json.dumps(vars(op)).encode('utf-8')
+        length = len(body) + 1
+
+        self.fh.write(f"+++{length:016x}\n".encode('utf-8'))
+        self.fh.write(body)
+        self.fh.write(f"\n---{length:016x}\n".encode('utf-8'))
+
+        self._next_idx = self.fh.tell()
+
+
 
 
 class Store:
     def __init__(self, fh):
         self.fh = fh
         self.d = {}
+
+    def load(self):
+        self.fh.seek(0)
+        self.d = json.loads(self.fh.read().decode('utf-8'))
+
+    def write(self):
+        self.fh.seek(0)
+        self.fh.write(json.dumps(self.d).encode('utf-8'))
+        self.fh.truncate()
 
     def set(self, k, v):
         self.d[k] = v
@@ -636,8 +701,9 @@ class Store:
         for k in changes:
             old, new = changes[k]
             if self.d.get(k) != old:
-                raise Bad("oh no")
+                raise Bad("oh no: store out of sync")
             self.d[k] = new
+        self.write()
 
     def rollback(self, changes):
         for k in changes:
@@ -647,6 +713,7 @@ class Store:
                 self.d[k] = old
             elif current != old:
                 raise Bad("oh no")
+        self.write()
 
 
 def more_example_code():
@@ -732,6 +799,7 @@ def run_all_examples():
 
 if __name__ == '__main__':
     import sys
+    import os
 
     commands = {
         "example": "        # run example code in memory",
@@ -765,44 +833,83 @@ if __name__ == '__main__':
     elif arg == "create":
         # if exists, exit
 
-        with open("log", "xb") as log_fh, open("store", "xb") as store_fh:
+        with open("log", "xb+") as log_fh, open("store", "xb+") as store_fh:
             log = Log(log_fh)
             store = Store(store_fh)
+            store.write()
 
             oplog = OpLog(log, store)
             oplog.init({"file":"store"})
 
         sys.exit(0)
+    elif arg == "compact":
+        with open("log", "ab+") as log_fh, open("new_log", "xb+") as new_log_fh:
+            log = Log(log_fh)
+            OpLog(log, None).init({"file":"store"})
 
-    with open("log", "ab") as log_fh:
+            top_idx, top = log.top()
+            store_file = top.state["file"]
+
+            with open(store_file, "rb+") as store_fh:
+                store = Store(store_fh)
+                store.load()
+                oplog = OpLog(log, store)
+                oplog.recover()
+
+                new_log = Log(new_log_fh)
+
+                oplog.compact(new_log)
+
+        os.replace("new_log", "log")
+
+        pass
+
+    with open("log", "ab+") as log_fh:
         log = Log(log_fh)
         OpLog(log, None).init({"file":"store"})
 
         top_idx, top = log.top()
         store_file = top.state["file"]
 
-        with open(store_file) as store_fh:
+        with open(store_file, "rb+") as store_fh:
             store = Store(store_fh)
+            store.load()
             oplog = OpLog(log, store)
             oplog.recover()
 
             if arg == "get":
-                pass
+                for name in sys.argv[2:]:
+                    value = store.get(name)
+                    if value is not None:
+                        print(f"{name}:{store.get(name)}")
             elif arg == "set":
-                pass
+                with oplog.do(" ".join(sys.argv[1:])) as txn:
+                    for arg in sys.argv[2:]:
+                        key, value = arg.split('=')
+                        if value == "":
+                              value = None
+                        print(f"{key}: {value}")
+                        txn.set_store(key, value)
             elif arg == "undo":
-                pass
+                oplog.undo()
+                print("undo")
             elif arg == "redo":
-                pass
+                n = -1
+                if len(sys.argv[2:]) >= 1:
+                    n = int(sys.argv[2])
+                oplog.redo(n)
+                print("redo")
             elif arg == "redos":
-                pass
+                for i, r in enumerate(oplog.redos()):
+                    print(i, r)
             elif arg == "changes":
-                pass
+                for line in oplog.linear_history():
+                    print(line)
             elif arg == "history":
-                pass
-            elif arg == "compact":
-                pass
+                for line in oplog.history():
+                    print(line)
 
+    print()
     sys.exit(-1)
 
 
